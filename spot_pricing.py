@@ -1,9 +1,11 @@
+# https://docs.aws.amazon.com/cli/latest/reference/ec2/describe-spot-price-history.html
+
 import boto3
 from datetime import datetime
 import sqlite3
 
 # Work with a sample response for development
-GET_DATA = True
+GET_DATA = False
 DB_FILE = 'cache/sample.db'
 
 # TODO: multiple specified instance types (and their tables)
@@ -19,7 +21,7 @@ c = conn.cursor()
 
 if GET_DATA:
     # Note: table names can't be parameterized
-    c.execute('CREATE TABLE IF NOT EXISTS "%s" (timestamp date, availabilityzone text, spotprice real, PRIMARY KEY (timestamp, availabilityzone))' % instance_type)
+    c.execute('CREATE TABLE IF NOT EXISTS "%s" (timestamp TIMESTAMP , availabilityzone TEXT, spotprice REAL, PRIMARY KEY (timestamp, availabilityzone))' % instance_type)
 
     client = boto3.client('ec2')
 
@@ -40,15 +42,26 @@ if GET_DATA:
         print('Fetched {} spot price entries'.format(len(response['SpotPriceHistory'])))
 
         # Turn response into something that's easily inserted into DB - list of tuples
+        #   By default, returned datetime has timezone info. It's UTF from the AWS API.
+        #    Strip it for compatibility with sqlite
         to_add = []
         for row in response['SpotPriceHistory']:
-            to_add.append((row['Timestamp'], row['AvailabilityZone'], row['SpotPrice']))
+            to_add.append((row['Timestamp'].replace(tzinfo=None), row['AvailabilityZone'], row['SpotPrice']))
 
         c.executemany('INSERT OR IGNORE INTO "%s" VALUES (?,?,?)' % instance_type, to_add)
+        conn.commit()
 
         next_token = response['NextToken']
         if next_token == '':
             break
 
-conn.commit()
+
 conn.close()
+
+# Analyze data
+conn = sqlite3.connect(DB_FILE, detect_types=sqlite3.PARSE_DECLTYPES|sqlite3.PARSE_COLNAMES)
+c = conn.cursor()
+
+availability_zone = 'us-east-1a'
+c.execute('SELECT timestamp, spotprice FROM "%s" WHERE availabilityzone=?' % instance_type, (availability_zone,))
+row = c.fetchone()
