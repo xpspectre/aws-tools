@@ -14,7 +14,7 @@ DB_FILE = 'cache/sample.db'
 TIME_STR = '%Y-%m-%d %H:%M:%S'
 
 
-def fetch_spot_history(conn, instance_type, start_time, end_time):
+def fetch_spot_history(conn, instance_type, availability_zone, start_time, end_time):
     # https://boto3.readthedocs.io/en/latest/reference/services/ec2.html#EC2.Client.describe_spot_price_history
     # https://docs.aws.amazon.com/cli/latest/reference/ec2/describe-spot-price-history.html
     # Get for all Availability Zones
@@ -29,6 +29,7 @@ def fetch_spot_history(conn, instance_type, start_time, end_time):
             EndTime=end_time,
             InstanceTypes=[instance_type],
             ProductDescriptions=['Linux/UNIX'],
+            AvailabilityZone=availability_zone,
             NextToken=next_token
         )
 
@@ -49,7 +50,7 @@ def fetch_spot_history(conn, instance_type, start_time, end_time):
             break
 
 
-def get_avail_zones(conn, instance_type):
+def get_db_avail_zones(conn, instance_type):
     c = conn.cursor()
     zones = []
     c.execute('SELECT DISTINCT availabilityzone FROM "{table}"'.format(table=instance_type))
@@ -59,7 +60,7 @@ def get_avail_zones(conn, instance_type):
 
 
 def update_spot_history(instance_type, start_time, end_time):
-    #
+    # Update cached spot price history
     # Store in sqlite db
     #   Ignore Product, everything will be Linux/UNIX
     #   Table for Instance type
@@ -73,40 +74,38 @@ def update_spot_history(instance_type, start_time, end_time):
         conn.execute('CREATE TABLE IF NOT EXISTS "{table}" (timestamp TIMESTAMP , availabilityzone TEXT, spotprice REAL, PRIMARY KEY (timestamp, availabilityzone))'.format(table=instance_type))
 
     # Get availability zones present
-    zones = get_avail_zones(conn, instance_type)
+    client = boto3.client('ec2')
+    response = client.describe_availability_zones()
+    zones = []
+    for row in response['AvailabilityZones']:
+        zones.append(row['ZoneName'])
 
-    if zones:  # empty?
-        # Get time range already present in the database
-        first_times = []
-        last_times = []
-        c = conn.cursor()
-        for zone in zones:
-            c.execute('SELECT MIN(timestamp) FROM "{table}" WHERE availabilityzone=?'.format(table=instance_type), (zone,))
-            first_times.append(datetime.strptime(c.fetchone()[0], TIME_STR))
-            c.execute('SELECT MAX(timestamp) FROM "{table}" WHERE availabilityzone=?'.format(table=instance_type), (zone,))
-            last_times.append(datetime.strptime(c.fetchone()[0], TIME_STR))
-
-        first_time = max(first_times)
-        last_time = min(last_times)
+    c = conn.cursor()
+    for zone in zones:
+        c.execute('SELECT MIN(timestamp) FROM "{table}" WHERE availabilityzone=?'.format(table=instance_type), (zone,))
+        first_time = datetime.strptime(c.fetchone()[0], TIME_STR)
+        c.execute('SELECT MAX(timestamp) FROM "{table}" WHERE availabilityzone=?'.format(table=instance_type), (zone,))
+        last_time = datetime.strptime(c.fetchone()[0], TIME_STR)
 
         # Fetch earlier windows if needed
         if start_time < first_time:
-            fetch_spot_history(conn, instance_type, start_time, first_time)
+            fetch_spot_history(conn, instance_type, zone, start_time, first_time)
 
         # Fetch later windows if needed
         if last_time < end_time:
-            fetch_spot_history(conn, instance_type, last_time, end_time)
+            fetch_spot_history(conn, instance_type, zone, last_time, end_time)
 
     conn.close()
 
 
 if __name__ == '__main__':
-    GET_DATA = False  # DEBUG: whether to collect/update data at all
+    GET_DATA = True  # DEBUG: whether to collect/update data at all
 
     # Get the current date/time and 1 week ago
     # Turn into UTC
-    end_time = datetime.utcnow()
-    start_time = end_time - timedelta(days=60)
+    # end_time = datetime.utcnow()
+    end_time = datetime(2016, 12, 10)
+    start_time = end_time - timedelta(days=7)
 
     # TODO: multiple specified instance types (and their tables)
     instance_type = 't1.micro'
@@ -119,7 +118,7 @@ if __name__ == '__main__':
 
     # Make plots of spot price over time for each avail zone
     # This is probably inefficient...
-    zones = get_avail_zones(conn, instance_type)
+    zones = get_db_avail_zones(conn, instance_type)
 
     # Exclude us-east-1e zone. It looks like a test zone that has too-high price
     try:
