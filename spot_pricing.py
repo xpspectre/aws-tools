@@ -113,7 +113,6 @@ if __name__ == '__main__':
     end_time = datetime(2016, 12, 10)
     start_time = end_time - timedelta(days=7)
 
-    # TODO: multiple specified instance types (and their tables)
     instance_type = 't1.micro'
 
     if GET_DATA:

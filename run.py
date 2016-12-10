@@ -1,16 +1,27 @@
 # https://aws.amazon.com/sdk-for-python/
 # https://github.com/boto/boto3
 # https://boto3.readthedocs.io/en/latest/
-import boto3
+from datetime import datetime, timedelta
+from instance_calc import get_valid_instance_types
+from spot_pricing import update_spot_history
 
-ec2 = boto3.resource('ec2')
+if __name__ == '__main__':
+    GET_DATA = False
 
-# Get instance statuses
-# for status in ec2.meta.client.describe_instance_status()['InstanceStatuses']:
-#     print(status)
+    # Request resources
+    resource_req = {'cpu': 8, 'mem': 16.0}  # constitutes a single "unit" of request
 
-# Get running instances
-instances = ec2.instances.filter(
-    Filters=[{'Name': 'instance-state-name', 'Values': ['running']}])
-for instance in instances:
-    print(instance.id, instance.instance_type)
+    instance_units = get_valid_instance_types(resource_req)
+
+    # end_time = datetime.utcnow()
+    end_time = datetime(2016, 12, 10)
+    start_time = end_time - timedelta(days=7)
+
+    # TODO: These can be done in parallel
+    if GET_DATA:
+        for instance_unit in instance_units:
+            instance_type = instance_unit['name']
+            update_spot_history(instance_type, start_time, end_time)
+
+    # Calculate $/unit for each instance type, availability zone
+
