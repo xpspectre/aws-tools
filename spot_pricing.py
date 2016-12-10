@@ -2,15 +2,14 @@
 # Does: Looks up from cache 1st; fetches results that aren't in the cache
 #   Check if instance type is present
 #   Gets present time range: have latest early time thru earliest late time; assumes present time ranges are contiguous
+import os
 import boto3
 from datetime import datetime, timedelta
 import sqlite3
-import numpy as np
 import matplotlib.pyplot as plt
 
 # Work with a sample response for development
-DB_FILE = 'cache/sample.db'
-
+CACHE_DIR = 'cache'
 TIME_STR = '%Y-%m-%d %H:%M:%S'
 
 
@@ -43,7 +42,7 @@ def fetch_spot_history(conn, instance_type, availability_zone, start_time, end_t
             to_add.append((row['Timestamp'].replace(tzinfo=None), row['AvailabilityZone'], row['SpotPrice']))
 
         with conn:
-            conn.executemany('INSERT OR IGNORE INTO "{table}" VALUES (?,?,?)'.format(table=instance_type), to_add)
+            conn.executemany('INSERT OR IGNORE INTO history VALUES (?,?,?)', to_add)
 
         next_token = response['NextToken']
         if next_token == '':
@@ -53,7 +52,7 @@ def fetch_spot_history(conn, instance_type, availability_zone, start_time, end_t
 def get_db_avail_zones(conn, instance_type):
     c = conn.cursor()
     zones = []
-    c.execute('SELECT DISTINCT availabilityzone FROM "{table}"'.format(table=instance_type))
+    c.execute('SELECT DISTINCT availabilityzone FROM history')
     for row in c:
         zones.append(row[0])
     return zones
@@ -61,39 +60,46 @@ def get_db_avail_zones(conn, instance_type):
 
 def update_spot_history(instance_type, start_time, end_time):
     # Update cached spot price history
-    # Store in sqlite db
+    # Store in sqlite db, 1 db for each instance type
     #   Ignore Product, everything will be Linux/UNIX
-    #   Table for Instance type
+    #   Single table called 'history'
     #   Cols for AvailabilityZone, Timestamp, SpotPrice
     #   AvailabilityZone+Timestamp primary key - identifies the entry
     # Fetches all avail zones together, which may cause extra fetches when avail zones times don't perfectly overlap
-    conn = sqlite3.connect(DB_FILE, detect_types=sqlite3.PARSE_DECLTYPES | sqlite3.PARSE_COLNAMES)
+    db_file = os.path.join(CACHE_DIR, '{}.db'.format(instance_type))
+    conn = sqlite3.connect(db_file, detect_types=sqlite3.PARSE_DECLTYPES | sqlite3.PARSE_COLNAMES)
 
-    # Note: table names can't be parameterized
+    # Note: table names can't be parametrized
     with conn:
-        conn.execute('CREATE TABLE IF NOT EXISTS "{table}" (timestamp TIMESTAMP , availabilityzone TEXT, spotprice REAL, PRIMARY KEY (timestamp, availabilityzone))'.format(table=instance_type))
+        conn.execute('CREATE TABLE IF NOT EXISTS history (timestamp TIMESTAMP , availabilityzone TEXT, spotprice REAL, PRIMARY KEY (timestamp, availabilityzone))')
 
-    # Get availability zones present
+    # Get availability zones remotely
     client = boto3.client('ec2')
     response = client.describe_availability_zones()
     zones = []
     for row in response['AvailabilityZones']:
         zones.append(row['ZoneName'])
 
+    # Get availability zones in cache
     c = conn.cursor()
+    cached_zones = get_db_avail_zones(conn, instance_type)
+
     for zone in zones:
-        c.execute('SELECT MIN(timestamp) FROM "{table}" WHERE availabilityzone=?'.format(table=instance_type), (zone,))
-        first_time = datetime.strptime(c.fetchone()[0], TIME_STR)
-        c.execute('SELECT MAX(timestamp) FROM "{table}" WHERE availabilityzone=?'.format(table=instance_type), (zone,))
-        last_time = datetime.strptime(c.fetchone()[0], TIME_STR)
+        if zone in cached_zones:
+            c.execute('SELECT MIN(timestamp) FROM history WHERE availabilityzone=?', (zone,))
+            first_time = datetime.strptime(c.fetchone()[0], TIME_STR)
+            c.execute('SELECT MAX(timestamp) FROM history WHERE availabilityzone=?', (zone,))
+            last_time = datetime.strptime(c.fetchone()[0], TIME_STR)
 
-        # Fetch earlier windows if needed
-        if start_time < first_time:
-            fetch_spot_history(conn, instance_type, zone, start_time, first_time)
+            # Fetch earlier windows if needed
+            if start_time < first_time:
+                fetch_spot_history(conn, instance_type, zone, start_time, first_time)
 
-        # Fetch later windows if needed
-        if last_time < end_time:
-            fetch_spot_history(conn, instance_type, zone, last_time, end_time)
+            # Fetch later windows if needed
+            if last_time < end_time:
+                fetch_spot_history(conn, instance_type, zone, last_time, end_time)
+        else:
+            fetch_spot_history(conn, instance_type, zone, start_time, end_time)
 
     conn.close()
 
@@ -114,7 +120,8 @@ if __name__ == '__main__':
         update_spot_history(instance_type, start_time, end_time)
 
     # Analyze data
-    conn = sqlite3.connect(DB_FILE, detect_types=sqlite3.PARSE_DECLTYPES | sqlite3.PARSE_COLNAMES)
+    db_file = os.path.join(CACHE_DIR, '{}.db'.format(instance_type))
+    conn = sqlite3.connect(db_file, detect_types=sqlite3.PARSE_DECLTYPES | sqlite3.PARSE_COLNAMES)
 
     # Make plots of spot price over time for each avail zone
     # This is probably inefficient...
@@ -130,7 +137,7 @@ if __name__ == '__main__':
     prices = []
     c = conn.cursor()
     for zone in zones:
-        c.execute('SELECT timestamp, spotprice FROM "{table}" WHERE availabilityzone=? ORDER BY timestamp'.format(table=instance_type), (zone,))
+        c.execute('SELECT timestamp, spotprice FROM history WHERE availabilityzone=? ORDER BY timestamp', (zone,))
         times_i = []
         prices_i = []
         for row in c:
