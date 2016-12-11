@@ -104,6 +104,34 @@ def update_spot_history(instance_type, start_time, end_time):
     conn.close()
 
 
+def get_spot_history(instance_type, start_time, end_time, exclude_zones=[]):
+    # Get spot price history from cache
+    db_file = os.path.join(CACHE_DIR, '{}.db'.format(instance_type))
+    conn = sqlite3.connect(db_file, detect_types=sqlite3.PARSE_DECLTYPES | sqlite3.PARSE_COLNAMES)
+    times = []
+    prices = []
+    c = conn.cursor()
+    zones = get_db_avail_zones(conn, instance_type)
+
+    for exclude_zone in exclude_zones:
+        try:
+            zones.remove(exclude_zone)
+        except ValueError:
+            pass
+
+    for zone in zones:
+        c.execute('SELECT timestamp, spotprice FROM history WHERE availabilityzone=? AND timestamp BETWEEN datetime(?) AND datetime(?) ORDER BY timestamp', (zone, start_time, end_time))
+        times_i = []
+        prices_i = []
+        for row in c:
+            times_i.append(row[0])
+            prices_i.append(row[1])
+
+        times.append(times_i)
+        prices.append(prices_i)
+    return times, prices, zones
+
+
 if __name__ == '__main__':
     GET_DATA = True  # DEBUG: whether to collect/update data at all
 
@@ -119,35 +147,13 @@ if __name__ == '__main__':
         update_spot_history(instance_type, start_time, end_time)
 
     # Analyze data
-    db_file = os.path.join(CACHE_DIR, '{}.db'.format(instance_type))
-    conn = sqlite3.connect(db_file, detect_types=sqlite3.PARSE_DECLTYPES | sqlite3.PARSE_COLNAMES)
-
     # Make plots of spot price over time for each avail zone
     # This is probably inefficient...
-    zones = get_db_avail_zones(conn, instance_type)
-
-    # Exclude us-east-1e zone. It looks like a test zone that has too-high price
-    try:
-        zones.remove('us-east-1e')
-    except ValueError:
-        pass
-
-    times = []
-    prices = []
-    c = conn.cursor()
-    for zone in zones:
-        c.execute('SELECT timestamp, spotprice FROM history WHERE availabilityzone=? ORDER BY timestamp', (zone,))
-        times_i = []
-        prices_i = []
-        for row in c:
-            times_i.append(row[0])
-            prices_i.append(row[1])
-
-        times.append(times_i)
-        prices.append(prices_i)
+    times, prices, zones = get_spot_history(instance_type, start_time, end_time, exclude_zones=['us-east-1e'])
 
     plt.figure()
     for i, zone in enumerate(zones):
         plt.plot(times[i], prices[i])
     plt.legend(zones)
+    plt.title(instance_type)
     plt.show()
