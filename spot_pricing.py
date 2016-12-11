@@ -7,6 +7,7 @@ import boto3
 from datetime import datetime, timedelta
 import sqlite3
 import matplotlib.pyplot as plt
+import numpy as np
 
 # Work with a sample response for development
 CACHE_DIR = 'cache'
@@ -105,7 +106,7 @@ def update_spot_history(instance_type, start_time, end_time):
 
 
 def get_spot_history(instance_type, start_time, end_time, exclude_zones=[]):
-    # Get spot price history from cache
+    # Get spot price history from cache. Returns times and prices as numpy datatypes.
     db_file = os.path.join(CACHE_DIR, '{}.db'.format(instance_type))
     conn = sqlite3.connect(db_file, detect_types=sqlite3.PARSE_DECLTYPES | sqlite3.PARSE_COLNAMES)
     times = []
@@ -127,8 +128,8 @@ def get_spot_history(instance_type, start_time, end_time, exclude_zones=[]):
             times_i.append(row[0])
             prices_i.append(row[1])
 
-        times.append(times_i)
-        prices.append(prices_i)
+        times.append(np.array(times_i, dtype='datetime64[s]'))  # units of seconds
+        prices.append(np.array(prices_i))
     return times, prices, zones
 
 
